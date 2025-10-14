@@ -6,7 +6,7 @@ import { Alert, Platform } from 'react-native';
 // 🚀 CONFIGURATION: HOST IP ADDRESS (UNIFIED) 🚀
 const HOST_IP = '10.136.115.167'; 
 const PORT = 5000;
-const API_BASE = `http://${HOST_IP}:${PORT}`; 
+const API_BASE = `https://full-hospital-management-system.onrender.com`; 
 
 const AuthContext = createContext();
 
