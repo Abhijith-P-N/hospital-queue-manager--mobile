@@ -9,17 +9,90 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context'; 
 import axios from 'axios';
 import io from 'socket.io-client';
+import * as Notifications from 'expo-notifications'; // Import expo-notifications
+import * as Device from 'expo-device';           // Import expo-device (optional, but good practice)
+import Constants from 'expo-constants';         // Import expo-constants
 import { useAuth } from './contexts/AuthContextMobile'; // Assuming path
 
 // --- Configuration ---
-const HOST_IP = '10.136.115.167'; 
-const PORT = 5000;
 const BASE_URL = `https://full-hospital-management-system.onrender.com`;
 const RESEND_DELAY_SECONDS = 60; // 1 minute delay
 
+// Initializing socket connection to the hosted server
 const socket = io(BASE_URL, { transports: ['websocket'] });
 
-// Helper function to get today's date in YYYY-MM-DD format
+// --- Notification Setup ---
+// Set the notification handler to allow alerts/sounds in the foreground
+Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+        shouldShowAlert: true,
+        shouldPlaySound: true,
+        shouldSetBadge: true,
+    }),
+});
+
+// Utility function to request permissions and schedule local notification
+async function scheduleLocalNotification(title, body) {
+    // 1. Get permissions
+    let token;
+    if (Device.isDevice) {
+        const { status: existingStatus } = await Notifications.getPermissionsAsync();
+        let finalStatus = existingStatus;
+        if (existingStatus !== 'granted') {
+            const { status } = await Notifications.requestPermissionsAsync();
+            finalStatus = status;
+        }
+        if (finalStatus !== 'granted') {
+            Alert.alert('Permission Denied', 'Failed to get push token for notification. Please enable permissions in settings.');
+            return;
+        }
+        
+        // Android specific channel setup (recommended)
+        if (Platform.OS === 'android') {
+             Notifications.setNotificationChannelAsync('default', {
+                name: 'Default',
+                importance: Notifications.AndroidImportance.MAX,
+                vibrationPattern: [0, 250, 250, 250],
+                lightColor: '#FF231F7C',
+            });
+        }
+    } else {
+        // Skip permission check on web/emulator (non-physical device)
+    }
+
+    // 2. Schedule the notification
+    await Notifications.scheduleNotificationAsync({
+        content: {
+            title: title,
+            body: body,
+            sound: 'default',
+        },
+        trigger: { 
+            seconds: 1, // Show almost immediately
+            channelId: 'default' 
+        },
+    });
+}
+// --- END Notification Setup ---
+
+// --- Tab Configuration and Icon Mapping ---
+const TABS = [
+    { key: 'home', title: 'Home', icon: '🏠' },
+    { key: 'livequeue', title: 'Live Queue', icon: '⏱️' }, 
+    { key: 'queue', title: 'Token', icon: '🎫' },
+    { key: 'prescriptions', title: 'Rx', icon: '📝' },
+    { key: 'pharmacy', title: 'Pharmacy', icon: '💊' },
+    { key: 'profile', title: 'Profile', icon: '👤' },
+];
+
+const TABS_NAV_BAR = TABS.filter(tab => 
+    tab.key === 'home' || 
+    tab.key === 'queue' || 
+    tab.key === 'pharmacy' || 
+    tab.key === 'profile'
+);
+
+// Helper functions 
 const getTodayDateString = () => {
     const now = new Date();
     const year = now.getFullYear();
@@ -28,17 +101,14 @@ const getTodayDateString = () => {
     return `${year}-${month}-${day}`;
 };
 
-// Helper function for mock OTP generation
 const generateOtp = () => {
     return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-// 🌟 NEW UTILITY: Function to format numbers as Indian Rupee (INR) currency
 const formatINR = (amount) => {
     if (typeof amount !== 'number' || isNaN(amount)) {
         return '₹ 0.00'; 
     }
-    // Use 'en-IN' locale for Indian numbering system (lakhs/crores) and INR symbol
     return new Intl.NumberFormat('en-IN', {
         style: 'currency',
         currency: 'INR',
@@ -46,8 +116,6 @@ const formatINR = (amount) => {
     }).format(amount);
 };
 
-
-// 💡 NEW COMPONENT: Resend OTP Button with Countdown (React Native version)
 const ResendOTPButtonMobile = ({ lastResendTime, onResend, isLoading }) => {
     const [timeLeft, setTimeLeft] = useState(0);
 
@@ -86,6 +154,29 @@ const ResendOTPButtonMobile = ({ lastResendTime, onResend, isLoading }) => {
     );
 };
 
+// 💡 NEW COMPONENT: Bottom Tab Bar
+const BottomTabBar = ({ activeTab, onTabPress, pharmacyCount }) => (
+    <View style={styles.bottomBarContainer}>
+        {TABS_NAV_BAR.map(tab => (
+            <TouchableOpacity
+                key={tab.key}
+                style={styles.bottomBarButton}
+                onPress={() => onTabPress(tab.key)}
+            >
+                <Text style={[styles.bottomBarIcon, activeTab === tab.key && styles.bottomBarIconActive]}>
+                    {tab.icon}
+                </Text>
+                <Text style={[styles.bottomBarText, activeTab === tab.key && styles.bottomBarTextActive]}>
+                    {tab.title}
+                    {tab.key === 'pharmacy' && pharmacyCount > 0 && 
+                     <Text style={styles.bottomBarBadge}> ({pharmacyCount})</Text>}
+                </Text>
+            </TouchableOpacity>
+        ))}
+    </View>
+);
+
+
 const PatientDashboardMobile = () => {
     const { user, logout, API_BASE } = useAuth();
     const [doctors, setDoctors] = useState([]);
@@ -97,7 +188,7 @@ const PatientDashboardMobile = () => {
     const [selectedPrescription, setSelectedPrescription] = useState(null);
     const [loading, setLoading] = useState(false);
     const [paymentLoading, setPaymentLoading] = useState(false); 
-    const [activeTab, setActiveTab] = useState('queue');
+    const [activeTab, setActiveTab] = useState('home'); 
     const [bookingDate, setBookingDate] = useState(getTodayDateString());
     const [showDoctorPicker, setShowDoctorPicker] = useState(false);
     const [isRefreshing, setIsRefreshing] = useState(false); 
@@ -107,6 +198,7 @@ const PatientDashboardMobile = () => {
 
 
     // --- Computed values & Helpers ---
+    const pharmacyOrderCount = prescriptions.filter(p => p.status === 'ready-for-payment').length;
     const isPatientToken = (token) => currentToken && token._id === currentToken._id; 
     
     const patientsAhead = doctorQueue.filter(token => 
@@ -117,6 +209,7 @@ const PatientDashboardMobile = () => {
     
     const patientInConsultation = doctorQueue.find(token => token.status === 'in-consultation');
     
+    // queueDisplayList is used specifically on the 'Token' tab to show only patients ahead/in consultation.
     const queueDisplayList = [];
     if (patientInConsultation && !isPatientToken(patientInConsultation)) {
         queueDisplayList.push(patientInConsultation);
@@ -125,15 +218,8 @@ const PatientDashboardMobile = () => {
     if (currentToken && currentToken.status === 'waiting') {
         queueDisplayList.push(currentToken); 
     }
-    
-    const formatDate = (dateString) => {
-        return new Date(dateString).toLocaleDateString('en-US', {
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
-        });
-    };
 
     // --- Fetching Logic ---
-
     const fetchDoctors = useCallback(async () => {
         try {
             const response = await axios.get(`${API_BASE}/api/doctors/list`);
@@ -176,16 +262,11 @@ const PatientDashboardMobile = () => {
             const response = await axios.get(`${API_BASE}/api/queue/my-token`);
             const token = response.data.data.token;
             setCurrentToken(token);
-            if (token && token.doctor?._id) {
-                setSelectedDoctor(token.doctor._id);
-                fetchQueueStats(token.doctor._id);
-                fetchDoctorQueue(token.doctor._id); 
-            } else {
-                setDoctorQueue([]);
-            }
+            return token; // Return token for use in handleQueueUpdate
         } catch (e) {
             setCurrentToken(null);
             setDoctorQueue([]); 
+            return null;
         }
     }, [API_BASE, fetchQueueStats, fetchDoctorQueue]);
 
@@ -194,11 +275,9 @@ const PatientDashboardMobile = () => {
             const response = await axios.get(`${API_BASE}/api/patients/prescriptions`); 
             let fetchedPrescriptions = response.data.data.prescriptions || []; 
             
-            // Sort by descending date (Newest first: b - a)
             const sortedPrescriptions = fetchedPrescriptions.sort((a, b) => {
                 const dateA = new Date(a.createdAt || a._id).getTime();
                 const dateB = new Date(b.createdAt || b._id).getTime();
-
                 return dateB - dateA;
             });
             
@@ -219,7 +298,6 @@ const PatientDashboardMobile = () => {
         setIsRefreshing(false);
     }, [fetchDoctors, fetchCurrentToken, fetchPrescriptions]);
 
-
     // --- Effects and Socket Setup ---
 
     useEffect(() => {
@@ -232,11 +310,35 @@ const PatientDashboardMobile = () => {
         }
         
         const handleQueueUpdate = () => {
-            fetchCurrentToken();
-            if (selectedDoctor) {
-                fetchQueueStats(selectedDoctor);
-                fetchDoctorQueue(selectedDoctor);
-            }
+            const previousTokenPosition = currentToken ? currentToken.position : null;
+            
+            fetchCurrentToken().then((newToken) => {
+                // Fetch updated queue stats for the currently selected doctor or the doctor of the new token
+                const doctorIdToFetch = newToken?.doctor?._id || selectedDoctor;
+                if (doctorIdToFetch) {
+                    fetchQueueStats(doctorIdToFetch);
+                    fetchDoctorQueue(doctorIdToFetch);
+                }
+
+                // --- NOTIFICATION LOGIC ---
+                if (newToken) {
+                    // Notify when token reaches position 1
+                    if (newToken.status === 'waiting' && previousTokenPosition > 1 && newToken.position === 1) {
+                        scheduleLocalNotification(
+                            "You're Next!",
+                            `Your token #${newToken.tokenNumber} is now position 1. Please prepare for your consultation!`
+                        );
+                    }
+                    // Notify when token is called for consultation
+                    else if (newToken.status === 'in-consultation' && currentToken?.status !== 'in-consultation') {
+                         scheduleLocalNotification(
+                            "It's Your Turn!",
+                            `Your token #${newToken.tokenNumber} is now being called. Proceed to Dr. ${newToken.doctor?.name}'s office.`
+                        );
+                    }
+                }
+                // --- END NOTIFICATION LOGIC ---
+            });
         };
 
         const handleNewPrescription = (data) => {
@@ -249,7 +351,12 @@ const PatientDashboardMobile = () => {
         
         const handleFeeReady = (data) => {
             if (data.patientId === user.id) {
-                Alert.alert('Payment Required!', `Your prescription fees are ready: ${formatINR(data.totalFee)}. Pay now in the Pharmacy Status tab.`);
+                // --- FEE READY NOTIFICATION (Using Expo Notification instead of just Alert) ---
+                scheduleLocalNotification(
+                    'Payment Required!', 
+                    `Your pharmacy fees are ready: ${formatINR(data.totalFee)}. Please pay in the Pharmacy tab to receive your medication.`
+                );
+                // --- END FEE READY NOTIFICATION ---
                 fetchPrescriptions(); 
                 setActiveTab('pharmacy'); 
             }
@@ -276,13 +383,19 @@ const PatientDashboardMobile = () => {
             socket.off('prescription-fee-ready', handleFeeReady); 
             socket.off('prescription-delivered', handleDeliveryComplete); 
         };
-    }, [user, selectedDoctor, fetchDoctors, fetchCurrentToken, fetchPrescriptions, fetchQueueStats, fetchDoctorQueue]); 
+    }, [user, selectedDoctor, fetchDoctors, fetchCurrentToken, fetchPrescriptions, fetchQueueStats, fetchDoctorQueue, currentToken]); 
     
     useEffect(() => {
-        if (selectedDoctor && !currentToken) {
+        // Data fetch synchronization for Live Queue and Booking
+        if (selectedDoctor) {
             fetchQueueStats(selectedDoctor);
+            fetchDoctorQueue(selectedDoctor);
+        } else {
+            // Clear stats immediately when no doctor is selected
+            setQueueStats({});
+            setDoctorQueue([]);
         }
-    }, [selectedDoctor, fetchQueueStats, currentToken]);
+    }, [selectedDoctor, fetchQueueStats, fetchDoctorQueue]);
     
     useEffect(() => {
         if (activeTab === 'pharmacy') {
@@ -298,7 +411,7 @@ const PatientDashboardMobile = () => {
             setSelectedPrescription(null);
         }
     }, [activeTab, prescriptions]);
-
+    
     // --- Action Handlers ---
 
     const getToken = async () => {
@@ -316,32 +429,28 @@ const PatientDashboardMobile = () => {
             });
             const newToken = response.data.data.token;
             setCurrentToken(newToken);
-            Alert.alert('Success', `Token #${newToken.tokenNumber} generated successfully!`);
+            
+            // --- BOOKING NOTIFICATION ---
+            scheduleLocalNotification(
+                'Success!', 
+                `Token #${newToken.tokenNumber} booked for Dr. ${newToken.doctor?.name}. Your position is ${newToken.position}.`
+            );
+            // --- END BOOKING NOTIFICATION ---
+
             socket.emit('join-queue', selectedDoctor);
             fetchDoctorQueue(selectedDoctor);
+            setActiveTab('queue'); // Switch to queue tab on success
         } catch (error) {
             if (error.response) {
-                console.error('TOKEN ERROR - Response Status:', error.response.status);
-                console.error('TOKEN ERROR - Response Data:', error.response.data);
-                Alert.alert(
-                    'Booking Failed (Server)', 
-                    error.response.data.message || `Server Error: Status ${error.response.status}. Please check inputs.`
-                );
-            } else if (error.request) {
-                console.error('TOKEN ERROR - Network Error:', error.message);
-                Alert.alert(
-                    'Booking Failed (Network)', 
-                    `Could not reach the server at ${BASE_URL}. Please check your connection and firewall.`
-                );
+                Alert.alert('Booking Failed (Server)', error.response.data.message || `Server Error.`);
             } else {
-                console.error('TOKEN ERROR - Request Setup:', error.message);
                 Alert.alert('Booking Failed', 'An unexpected error occurred during the booking process.');
             }
         } finally {
             setLoading(false);
         }
     };
-
+    
     const cancelToken = async () => {
         if (!currentToken || currentToken.status !== 'waiting') return;
         Alert.alert(
@@ -484,7 +593,7 @@ const PatientDashboardMobile = () => {
         </View>
     );
     
-    // 🌟 NEW RENDER FUNCTION: Profile Tab Content (Now includes Logout)
+    // 🌟 RENDER FUNCTION: Profile Tab Content
     const renderProfileTabContent = () => (
         <View style={styles.card}>
             <Text style={styles.sectionTitle}>My Profile</Text>
@@ -518,87 +627,176 @@ const PatientDashboardMobile = () => {
         </View>
     );
 
-
-    // --- Render Components (Mobile UI) ---
-
-    const headerStyleDynamic = {
-        ...styles.header,
-        paddingTop: Platform.OS === 'ios' ? 0 : 30, 
-    };
+    // --- Render Functions ---
 
     const renderHeader = () => (
-        <View style={headerStyleDynamic}>
+        <View style={styles.header}>
             <Text style={styles.headerTitle}>MediQueue</Text>
-            {/* LOGOUT BUTTON REMOVED FROM HERE */}
         </View>
-    );
-
-    const renderTabs = () => (
-        <View style={styles.tabContainer}>
-            <TouchableOpacity 
-                style={[styles.tabButton, activeTab === 'queue' && styles.tabButtonActive]} 
-                onPress={() => setActiveTab('queue')}
-            >
-                <Text style={[styles.tabText, activeTab === 'queue' && styles.tabTextActive]}>Queue</Text>
-            </TouchableOpacity>
-            <TouchableOpacity 
-                style={[styles.tabButton, activeTab === 'prescriptions' && styles.tabButtonActive]} 
-                onPress={() => setActiveTab('prescriptions')}
-            >
-                <Text style={[styles.tabText, activeTab === 'prescriptions' && styles.tabTextActive]}>
-                    Prescriptions
-                </Text>
-            </TouchableOpacity>
-            <TouchableOpacity 
-                style={[styles.tabButton, activeTab === 'pharmacy' && styles.tabButtonActive]} 
-                onPress={() => setActiveTab('pharmacy')}
-            >
-                <Text style={[styles.tabText, activeTab === 'pharmacy' && styles.tabTextActive]}>
-                    Pharmacy {prescriptions.filter(p => p.status === 'ready-for-payment').length > 0 && 
-                        <Text style={styles.tabBadge}>({prescriptions.filter(p => p.status === 'ready-for-payment').length})</Text>}
-                </Text>
-            </TouchableOpacity>
-             {/* 🌟 PROFILE TAB */}
-            <TouchableOpacity 
-                style={[styles.tabButton, activeTab === 'profile' && styles.tabButtonActive]} 
-                onPress={() => setActiveTab('profile')}
-            >
-                <Text style={[styles.tabText, activeTab === 'profile' && styles.tabTextActive]}>
-                    Profile
-                </Text>
-            </TouchableOpacity>
-        </View>
-    );
-
-    const renderDoctorPickerModal = () => ( 
-        <Modal visible={showDoctorPicker} animationType="slide" transparent={true}>
-            <View style={styles.modalOverlay}>
-                <View style={styles.doctorModalContent}>
-                    <Text style={styles.modalTitle}>Select a Doctor</Text>
-                    <ScrollView style={{ maxHeight: Dimensions.get('window').height * 0.6 }}>
-                        {doctors.map(doctor => (
-                            <TouchableOpacity
-                                key={doctor._id}
-                                style={styles.doctorOption}
-                                onPress={() => {
-                                    setSelectedDoctor(doctor._id);
-                                    setShowDoctorPicker(false);
-                                }}
-                            >
-                                <Text style={styles.doctorOptionText}>Dr. {doctor.name} - {doctor.specialization}</Text>
-                            </TouchableOpacity>
-                        ))}
-                    </ScrollView>
-                    <TouchableOpacity style={styles.modalCloseButton} onPress={() => setShowDoctorPicker(false)}>
-                        <Text style={styles.modalCloseButtonText}>Close</Text>
-                    </TouchableOpacity>
-                </View>
-            </View>
-        </Modal>
     );
     
+    // 💡 UPDATED RENDER: Home Tab Content (Dynamic Book/Show Token)
+    const renderHomeTabContent = () => {
+        
+        // Determine the text, icon, and action based on whether the user has a current token
+        const isTokenActive = !!currentToken;
+        const mainActionCard = isTokenActive ? 
+            {
+                title: "Show My Token",
+                subtitle: `Token #${currentToken.tokenNumber} is active.`,
+                icon: '🎟️', 
+                color: '#28a745', 
+                action: () => setActiveTab('queue'),
+            } : 
+            {
+                title: "Book New Appointment",
+                subtitle: "Select a doctor and get your token number now.",
+                icon: '✍️', 
+                color: '#00bcd4', 
+                action: () => setActiveTab('queue'),
+            };
+
+        return (
+            <View>
+                <View style={[styles.card, styles.welcomeCard]}>
+                    <Text style={styles.welcomeTitle}>Hello, {user?.name.split(' ')[0] || 'Patient'}!</Text>
+                    <Text style={styles.welcomeSubtitle}>Get Quick Access to Hospital Services.</Text>
+                </View>
+                
+                <View style={styles.actionCardContainer}>
+                    {/* 1. Main Dynamic Action Card (Book or Show Token) */}
+                    <TouchableOpacity 
+                        style={[styles.actionCard, { 
+                            backgroundColor: isTokenActive ? '#e8f5e9' : '#e0f7fa',
+                            width: '48%',
+                        }]} 
+                        onPress={mainActionCard.action} 
+                    >
+                        <Text style={[styles.actionCardIcon, { color: mainActionCard.color }]}>
+                            {mainActionCard.icon}
+                        </Text>
+                        <Text style={styles.actionCardTitle}>{mainActionCard.title}</Text>
+                        <Text style={[styles.actionCardSubtitle, {color: mainActionCard.color}]}>{mainActionCard.subtitle}</Text>
+                    </TouchableOpacity>
+
+                    {/* 2. View My Prescriptions */}
+                    <TouchableOpacity 
+                        style={[styles.actionCard, { backgroundColor: '#fffbe0', width: '48%' }]} 
+                        onPress={() => setActiveTab('prescriptions')}
+                    >
+                        <Text style={[styles.actionCardIcon, { color: '#ffc107' }]}>📜</Text>
+                        <Text style={styles.actionCardTitle}>View Prescriptions</Text>
+                        <Text style={[styles.actionCardSubtitle, {color: '#6c757d'}]}>History & Diagnosis</Text>
+                    </TouchableOpacity>
+
+                    {/* 3. Check Live Queue Status (Navigates to the new Live Queue tab) */}
+                    <TouchableOpacity 
+                        style={[styles.actionCard, { backgroundColor: '#f0f0f0', width: '100%', marginTop: 5 }]} 
+                        onPress={() => setActiveTab('livequeue')} 
+                    >
+                        <Text style={[styles.actionCardIcon, { color: '#343a40' }]}>📈</Text>
+                        <Text style={styles.actionCardTitle}>Check Live Queue Status</Text>
+                        <Text style={[styles.actionCardSubtitle, {color: '#6c757d'}]}>See waiting times for all doctors</Text>
+                    </TouchableOpacity>
+                </View>
+
+                <Text style={styles.sectionTitle}>Today's Status</Text>
+                <View style={styles.card}>
+                    {isTokenActive ? (
+                        <Text style={styles.statusTextActive}>Your token is currently active. Check the Token tab for details.</Text>
+                    ) : (
+                        <Text style={styles.statusTextInactive}>No active tokens found. Tap 'Book Appointment' to begin.</Text>
+                    )}
+                    {pharmacyOrderCount > 0 && (
+                        <Text style={styles.statusTextWarning}>
+                            {pharmacyOrderCount} pending fee/delivery action(s) in Pharmacy tab.
+                        </Text>
+                    )}
+                </View>
+            </View>
+        );
+    };
+
+    // 💡 NEW RENDER: Live Queue Tab Content (Shows the full doctorQueue for selected doctor)
+    const renderLiveQueueTabContent = () => {
+        // Find the selected doctor object to display their name
+        const selectedDoctorObj = selectedDoctor ? doctors.find(d => d._id === selectedDoctor) : null;
+        const selectedDoctorName = selectedDoctorObj ? `Dr. ${selectedDoctorObj.name}` : 'Tap to choose doctor...';
+        
+        return (
+            <View>
+                <Text style={styles.sectionTitle}>Live Doctor Queue</Text>
+                
+                <Text style={styles.label}>Select Doctor to View Queue</Text>
+                <TouchableOpacity style={styles.input} onPress={() => setShowDoctorPicker(true)}>
+                    <Text style={{ color: selectedDoctor ? '#343a40' : '#888' }}>{selectedDoctorName}</Text>
+                </TouchableOpacity>
+                {renderDoctorPickerModal()}
+                
+                {selectedDoctor ? (
+                    <View style={styles.card}>
+                        <Text style={[styles.doctorNameText, {marginBottom: 10}]}>{selectedDoctorName}</Text>
+
+                        {/* FIX: Check if we have fetched data for the selected doctor */}
+                        {queueStats.totalWaiting !== undefined ? (
+                            <View>
+                                <View style={styles.statsBox}>
+                                    <Text style={styles.statsText}>Patients in Queue:</Text>
+                                    <Text style={styles.statsText}>{queueStats.totalWaiting || 0}</Text>
+                                </View>
+                                <View style={styles.statsBox}>
+                                    <Text style={styles.statsText}>Est. Wait Time:</Text>
+                                    <Text style={styles.statsText}>{queueStats.nextEstimatedWaitTime || '--'} min</Text>
+                                </View>
+                                
+                                <Text style={styles.queueStatusTitle}>Queue Order (Full List):</Text>
+                                {doctorQueue.length > 0 ? (
+                                    // Using the unfiltered doctorQueue here to show everyone
+                                    doctorQueue.map((token) => {
+                                        const statusColor = token.status === 'in-consultation' ? '#dc3545' : '#17a2b8';
+                                        
+                                        return (
+                                            <View key={token._id} style={styles.queueItem}>
+                                                <View style={styles.queueItemLeft}>
+                                                    <Text style={styles.queueItemToken}>#{token.tokenNumber}</Text>
+                                                    <Text style={[styles.queueItemName, {color: statusColor, fontWeight: '600'}]}>
+                                                        {token.status === 'in-consultation' ? 'IN CONSULTATION' : `Waiting`}
+                                                    </Text>
+                                                </View>
+                                                <View style={styles.queueItemRight}>
+                                                    <Text style={styles.queueItemWait}>Position: {token.position}</Text>
+                                                </View>
+                                            </View>
+                                        );
+                                    })
+                                ) : (
+                                    <Text style={styles.emptyQueueText}>No patients currently in this queue.</Text>
+                                )}
+                            </View>
+                        ) : (
+                            // Show loading indicator only when a doctor is selected, otherwise show prompt
+                            selectedDoctor ? (
+                                <View style={{alignItems: 'center'}}>
+                                    <ActivityIndicator size="large" color="#00bcd4" style={{marginBottom: 10}}/>
+                                    <Text style={styles.emptyListText}>Loading queue data...</Text>
+                                </View>
+                            ) : (
+                                <Text style={styles.emptyListText}>Please select a doctor to view their live queue and waiting times.</Text>
+                            )
+                        )}
+                    </View>
+                ) : (
+                    <View style={styles.card}>
+                        <Text style={styles.emptyListText}>Please select a doctor to view their live queue and waiting times.</Text>
+                    </View>
+                )}
+            </View>
+        );
+    };
+
     const renderQueueTabContent = () => { 
         if (currentToken) {
+            // --- State 1: Active Token View with Your Position ---
             const statusStyle = currentToken.status === 'waiting' ? styles.statusWarning : styles.statusSuccess;
             const statusText = currentToken.status.toUpperCase();
             
@@ -608,7 +806,7 @@ const PatientDashboardMobile = () => {
                     
                     <View style={styles.tokenDisplayRow}>
                         <View style={styles.tokenNumberContainer}>
-                            <Text style={styles.tokenNumber}>{currentToken.tokenNumber}</Text>
+                            <Text style={styles.tokenNumber}>#{currentToken.tokenNumber}</Text>
                             <Text style={styles.tokenLabel}>Token No.</Text>
                         </View>
                         <View style={styles.tokenDetails}>
@@ -631,8 +829,9 @@ const PatientDashboardMobile = () => {
                             </Text>
                         </TouchableOpacity>
                     )}
-
-                    <Text style={styles.queueStatusTitle}>Active Queue</Text>
+                    
+                    {/* Active Queue List (Only showing relevant patients for better focus) */}
+                    <Text style={styles.queueStatusTitle}>Patients Ahead</Text>
                     {queueDisplayList.length > 0 ? (
                         queueDisplayList.map((token) => {
                             const isCurrent = isPatientToken(token);
@@ -654,14 +853,16 @@ const PatientDashboardMobile = () => {
                             );
                         })
                     ) : (
-                        <Text style={styles.emptyQueueText}>No other patients currently waiting.</Text>
+                        <Text style={styles.emptyQueueText}>You are next in line!</Text>
                     )}
+                    
                 </View>
             );
         }
 
         const selectedDoctorName = selectedDoctor ? doctors.find(d => d._id === selectedDoctor)?.name : 'Tap to choose doctor...';
 
+        // --- State 2: Booking Form (No Active Token) ---
         return (
             <View style={styles.card}>
                 <Text style={styles.sectionTitle}>Book New Appointment</Text>
@@ -696,7 +897,7 @@ const PatientDashboardMobile = () => {
                     {loading ? (
                         <ActivityIndicator color="#fff" />
                     ) : (
-                        <Text style={styles.bookButtonText}>Book Appointment</Text>
+                        <Text style={styles.bookButtonText}>Confirm Token Booking</Text>
                     )}
                 </TouchableOpacity>
             </View>
@@ -905,10 +1106,59 @@ const PatientDashboardMobile = () => {
         );
     };
 
+    const renderDoctorPickerModal = () => ( 
+        <Modal visible={showDoctorPicker} animationType="slide" transparent={true}>
+            <View style={styles.modalOverlay}>
+                <View style={styles.doctorModalContent}>
+                    <Text style={styles.modalTitle}>Select a Doctor</Text>
+                    <ScrollView style={{ maxHeight: Dimensions.get('window').height * 0.6 }}>
+                        {doctors.map(doctor => (
+                            <TouchableOpacity
+                                key={doctor._id}
+                                style={styles.doctorOption}
+                                onPress={() => {
+                                    // FIX: Update selected doctor AND immediately trigger data fetch
+                                    setSelectedDoctor(doctor._id);
+                                    setShowDoctorPicker(false);
+                                }}
+                            >
+                                <Text style={styles.doctorOptionText}>Dr. {doctor.name} - {doctor.specialization}</Text>
+                            </TouchableOpacity>
+                        ))}
+                    </ScrollView>
+                    <TouchableOpacity style={styles.modalCloseButton} onPress={() => setShowDoctorPicker(false)}>
+                        <Text style={styles.modalCloseButtonText}>Close</Text>
+                    </TouchableOpacity>
+                </View>
+            </View>
+        </Modal>
+    );
+
+    // --- Main Render ---
+
+    const renderContent = () => {
+        switch (activeTab) {
+            case 'home':
+                return renderHomeTabContent();
+            case 'livequeue':
+                return renderLiveQueueTabContent(); 
+            case 'queue':
+                return renderQueueTabContent();
+            case 'prescriptions':
+                return renderPrescriptionsTabContent();
+            case 'pharmacy':
+                return renderPharmacyTabContent();
+            case 'profile':
+                return renderProfileTabContent();
+            default:
+                return renderHomeTabContent();
+        }
+    };
+
     return (
         <SafeAreaView style={styles.safeArea}>
             {renderHeader()}
-            {renderTabs()}
+            
             <ScrollView 
                 style={styles.content}
                 refreshControl={
@@ -919,19 +1169,23 @@ const PatientDashboardMobile = () => {
                     />
                 }
             >
-                {activeTab === 'queue' && renderQueueTabContent()}
-                {activeTab === 'prescriptions' && renderPrescriptionsTabContent()}
-                {activeTab === 'pharmacy' && renderPharmacyTabContent()}
-                {/* 🌟 RENDER PROFILE TAB */}
-                {activeTab === 'profile' && renderProfileTabContent()}
-                
-                <View style={{ height: 50 }} />
+                {renderContent()}
+                <View style={{ height: 10 }} />
             </ScrollView>
+            
+            {/* 💡 NEW BOTTOM NAVIGATION BAR */}
+            <BottomTabBar 
+                activeTab={activeTab} 
+                onTabPress={setActiveTab} 
+                pharmacyCount={pharmacyOrderCount}
+            />
+            
+            {renderDoctorPickerModal()}
         </SafeAreaView>
     );
 };
 
-// --- Styles (React Native StyleSheet) ---
+// --- Styles (Refactored React Native StyleSheet) ---
 
 const styles = StyleSheet.create({
     safeArea: { 
@@ -943,65 +1197,13 @@ const styles = StyleSheet.create({
         paddingHorizontal: 20,
         paddingVertical: 15,
         flexDirection: 'row',
-        justifyContent: 'flex-start', // Adjusted to account for removed logout button
+        justifyContent: 'flex-start',
         alignItems: 'center',
         elevation: 4, 
     },
     headerTitle: {
         color: '#fff',
         fontSize: 22,
-        fontWeight: 'bold',
-    },
-    // The original logoutButton style is now unused in the header
-    // Retaining for use by the ResendOTPButton and for the new profile button style source
-    logoutButton: {
-        // paddingHorizontal: 12, // Removed from header
-        // paddingVertical: 6,    // Removed from header
-        // borderColor: '#fff',   // Removed from header
-        // borderWidth: 1,        // Removed from header
-        // borderRadius: 20,      // Removed from header
-    },
-    logoutButtonText: {
-        color: '#fff',
-        fontSize: 14,
-        fontWeight: '600',
-    },
-    // 🌟 NEW STYLE FOR PROFILE LOGOUT BUTTON
-    logoutButtonProfile: {
-        backgroundColor: '#dc3545', // Danger color
-        padding: 15,
-        borderRadius: 8,
-        alignItems: 'center',
-        marginTop: 10,
-    },
-    tabContainer: {
-        flexDirection: 'row',
-        backgroundColor: '#fff',
-        borderBottomWidth: 1,
-        borderBottomColor: '#ddd',
-        elevation: 1,
-    },
-    tabButton: {
-        flex: 1,
-        paddingVertical: 15,
-        borderBottomWidth: 3,
-        borderBottomColor: 'transparent',
-        alignItems: 'center',
-    },
-    tabButtonActive: {
-        borderBottomColor: '#00bcd4', 
-    },
-    tabText: {
-        color: '#6c757d',
-        fontWeight: '600',
-        fontSize: 14,
-        textAlign: 'center', // Added for better wrap handling
-    },
-    tabTextActive: {
-        color: '#00bcd4',
-    },
-    tabBadge: {
-        color: 'red',
         fontWeight: 'bold',
     },
     content: {
@@ -1024,65 +1226,117 @@ const styles = StyleSheet.create({
         color: '#17a2b8', 
         marginBottom: 15,
     },
-    label: {
-        fontSize: 14,
-        color: '#343a40',
+    // --- New Home/Action Card Styles ---
+    welcomeCard: {
+        backgroundColor: '#00bcd4',
+        padding: 25,
+        marginBottom: 20,
+        borderRadius: 12,
+        shadowColor: '#00bcd4',
+        shadowOpacity: 0.3,
+        shadowRadius: 5,
+        elevation: 5,
+    },
+    welcomeTitle: {
+        fontSize: 24,
+        fontWeight: 'bold',
+        color: '#fff',
         marginBottom: 5,
-        fontWeight: '600',
     },
-    input: {
-        borderWidth: 1,
-        borderColor: '#ccc',
-        padding: 12,
-        borderRadius: 8,
-        marginBottom: 15,
-        backgroundColor: '#f8f9fa',
-        minHeight: 45,
-        justifyContent: 'center',
+    welcomeSubtitle: {
+        fontSize: 16,
+        color: '#e0f7fa',
     },
-    statsBox: {
+    actionCardContainer: {
         flexDirection: 'row',
         justifyContent: 'space-between',
-        backgroundColor: '#e0f7fa', 
-        padding: 12,
-        borderRadius: 8,
-        marginBottom: 15,
-        borderLeftWidth: 4,
-        borderLeftColor: '#00bcd4',
+        marginBottom: 10,
+        flexWrap: 'wrap',
     },
-    statusBoxReview: {
-        backgroundColor: '#fffae0',
+    actionCard: {
+        width: '48%', 
+        minHeight: 110,
         padding: 15,
-        borderRadius: 8,
-        marginTop: 15,
-        borderLeftWidth: 4,
-        borderLeftColor: '#ffc107',
+        borderRadius: 10,
+        marginBottom: 10,
         alignItems: 'center',
+        justifyContent: 'center',
+        borderWidth: 1,
+        borderColor: '#eee',
+        elevation: 1,
     },
-    statusTextReview: {
-        color: '#665c00',
-        fontWeight: '600',
-        fontSize: 15,
+    actionCardIcon: {
+        fontSize: 30,
+        marginBottom: 5,
+    },
+    actionCardTitle: {
+        fontSize: 14,
+        fontWeight: 'bold',
+        color: '#343a40',
         textAlign: 'center',
     },
-    statsText: {
-        color: '#17a2b8',
-        fontWeight: '700',
+    actionCardSubtitle: {
+        fontSize: 11,
+        fontWeight: '500',
+        textAlign: 'center',
+        marginTop: 4,
+        paddingHorizontal: 5,
+    },
+    statusTextActive: {
         fontSize: 14,
+        fontWeight: '600',
+        color: '#28a745',
     },
-    bookButton: {
-        backgroundColor: '#00bcd4',
-        padding: 15,
-        borderRadius: 8,
+    statusTextInactive: {
+        fontSize: 14,
+        color: '#6c757d',
+    },
+    statusTextWarning: {
+        fontSize: 14,
+        color: '#ffc107',
+        marginTop: 5,
+    },
+    // --- END Home/Action Card Styles ---
+    
+    // --- New Bottom Tab Bar Styles ---
+    bottomBarContainer: {
+        flexDirection: 'row',
+        backgroundColor: '#fff',
+        borderTopWidth: 1,
+        borderTopColor: '#ddd',
+        paddingBottom: Platform.OS === 'ios' ? 10 : 0, 
+        paddingTop: 5,
+        elevation: 10,
+    },
+    bottomBarButton: {
+        flex: 1,
         alignItems: 'center',
-        marginTop: 10,
+        justifyContent: 'center',
+        paddingVertical: 5,
     },
-    bookButtonText: {
-        color: '#fff',
+    bottomBarIcon: {
+        fontSize: 22,
+        color: '#adb5bd',
+        marginBottom: 2,
+    },
+    bottomBarIconActive: {
+        color: '#00bcd4', // Active color
+    },
+    bottomBarText: {
+        fontSize: 10,
+        color: '#6c757d',
+        fontWeight: '600',
+    },
+    bottomBarTextActive: {
+        color: '#00bcd4',
+    },
+    bottomBarBadge: {
+        color: '#dc3545', 
         fontWeight: 'bold',
-        fontSize: 16,
     },
-    // Queue Card Styles (Existing)
+    // --- END Bottom Tab Bar Styles ---
+
+    // Queue Card Styles
     tokenCard: { borderLeftWidth: 5, borderLeftColor: '#28a745', },
     tokenCardTitle: { fontSize: 20, fontWeight: 'bold', color: '#00bcd4', textAlign: 'center', marginBottom: 15, },
     tokenDisplayRow: { flexDirection: 'row', marginBottom: 20, alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#eee', paddingBottom: 15, },
@@ -1096,6 +1350,8 @@ const styles = StyleSheet.create({
     statusSuccess: { color: '#28a745', fontWeight: 'bold', marginTop: 5, },
     cancelButton: { backgroundColor: '#dc3545', padding: 12, borderRadius: 8, alignItems: 'center', marginTop: 15, },
     cancelButtonText: { color: '#fff', fontWeight: 'bold', },
+    
+    // --- QUEUE LIST STYLES (Used in both Live Queue and Token views) ---
     queueStatusTitle: { fontSize: 16, fontWeight: 'bold', marginTop: 15, marginBottom: 10, color: '#17a2b8', },
     queueItem: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 12, paddingHorizontal: 10, borderBottomWidth: 1, borderBottomColor: '#eee', },
     queueItemActive: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 12, backgroundColor: '#f0fafa', borderLeftWidth: 4, borderLeftColor: '#00bcd4', paddingLeft: 10, },
@@ -1105,8 +1361,9 @@ const styles = StyleSheet.create({
     queueItemPosition: { fontSize: 14, color: '#343a40', },
     queueItemWait: { fontSize: 12, color: '#6c757d', },
     emptyQueueText: { color: '#6c757d', textAlign: 'center', paddingVertical: 10, },
+    // ------------------------------------------------------------------------
     
-    // Prescription List Styles (Existing/Minor Update)
+    // Prescription List Styles
     prescriptionItem: {
         flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#fff',
         padding: 15, borderRadius: 8, marginBottom: 10, borderLeftWidth: 4, borderLeftColor: '#00bcd4', elevation: 1,
@@ -1121,7 +1378,7 @@ const styles = StyleSheet.create({
     deleteButtonText: { color: '#fff', fontSize: 13, },
     emptyListText: { color: '#6c757d', textAlign: 'center', paddingVertical: 10, },
 
-    // Modal Styles (Existing/Minor Update)
+    // Modal Styles
     modalOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0, 0, 0, 0.6)', },
     modalContent: { width: '90%', backgroundColor: '#fff', borderRadius: 10, padding: 20, elevation: 10, },
     doctorModalContent: { width: '90%', backgroundColor: '#fff', borderRadius: 10, padding: 20, elevation: 10, },
@@ -1220,9 +1477,8 @@ const styles = StyleSheet.create({
         flex: 2,
         textAlign: 'right',
     },
-    // End Profile Section Styles
 
-    // 💡 EXISTING STYLES FOR PHARMACY TAB
+    // 💡 STYLES FOR PHARMACY TAB
     orderItem: {
         flexDirection: 'row',
         justifyContent: 'space-between',
@@ -1302,6 +1558,47 @@ const styles = StyleSheet.create({
         fontWeight: 'bold',
         fontSize: 14,
     },
+    logoutButtonProfile: { backgroundColor: '#dc3545', padding: 15, borderRadius: 8, alignItems: 'center', marginTop: 10, },
+    label: { fontSize: 14, color: '#343a40', marginBottom: 5, fontWeight: '600', },
+    input: { borderWidth: 1, borderColor: '#ccc', padding: 12, borderRadius: 8, marginBottom: 15, backgroundColor: '#f8f9fa', minHeight: 45, justifyContent: 'center', },
+    statsBox: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: '#e0f7fa', padding: 12, borderRadius: 8, marginBottom: 15, borderLeftWidth: 4, borderLeftColor: '#00bcd4', },
+    
+    // 🌟 ENHANCED BOOKING BUTTON STYLE
+    bookButton: {
+        backgroundColor: '#00bcd4',
+        padding: 15,
+        borderRadius: 10, // Slightly more rounded
+        alignItems: 'center',
+        marginTop: 20, // Increased margin for visual separation
+        // Enhanced shadow for 3D effect
+        ...Platform.select({
+            ios: {
+                shadowColor: '#00bcd4',
+                shadowOffset: { width: 0, height: 4 },
+                shadowOpacity: 0.3,
+                shadowRadius: 5,
+            },
+            android: {
+                elevation: 8,
+            },
+        }),
+    },
+    bookButtonText: {
+        color: '#fff',
+        fontWeight: '900', // Made text extra bold
+        fontSize: 18,
+    },
+    // --- QUEUE LIST STYLES (Used in both Live Queue and Token views) ---
+    queueStatusTitle: { fontSize: 16, fontWeight: 'bold', marginTop: 15, marginBottom: 10, color: '#17a2b8', },
+    queueItem: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 12, paddingHorizontal: 10, borderBottomWidth: 1, borderBottomColor: '#eee', },
+    queueItemActive: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 12, backgroundColor: '#f0fafa', borderLeftWidth: 4, borderLeftColor: '#00bcd4', paddingLeft: 10, },
+    queueItemToken: { fontWeight: '700', color: '#6c757d', fontSize: 13, },
+    queueItemName: { fontSize: 15, fontWeight: '500', },
+    queueItemRight: { alignItems: 'flex-end', },
+    queueItemPosition: { fontSize: 14, color: '#343a40', },
+    queueItemWait: { fontSize: 12, color: '#6c757d', },
+    emptyQueueText: { color: '#6c757d', textAlign: 'center', paddingVertical: 10, },
+    // ------------------------------------------------------------------------
 });
 
 export default PatientDashboardMobile;
