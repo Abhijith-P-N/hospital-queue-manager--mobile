@@ -4,25 +4,58 @@ import {
     TouchableOpacity, Alert, Platform, 
     Modal, TextInput, ActivityIndicator,
     Dimensions,
-    RefreshControl 
+    RefreshControl,
+    Image // Required to render local SVG assets using require()
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context'; 
 import axios from 'axios';
 import io from 'socket.io-client';
-import * as Notifications from 'expo-notifications'; // Import expo-notifications
-import * as Device from 'expo-device';           // Import expo-device (optional, but good practice)
-import Constants from 'expo-constants';         // Import expo-constants
-import { useAuth } from './contexts/AuthContextMobile'; // Assuming path
+import * as Notifications from 'expo-notifications'; 
+import * as Device from 'expo-device';           
+import Constants from 'expo-constants';         
+import { useAuth } from './contexts/AuthContextMobile'; 
 
 // --- Configuration ---
 const BASE_URL = `https://full-hospital-management-system.onrender.com`;
 const RESEND_DELAY_SECONDS = 60; // 1 minute delay
 
-// Initializing socket connection to the hosted server
+// Initializing socket connection
 const socket = io(BASE_URL, { transports: ['websocket'] });
 
+
+// --- SVG Asset Imports & Component Setup ---
+// IMPORTANT: Ensure these SVG files exist in your project path: ./assets/[name].svg
+const ASSETS = {
+    Home: require('./assets/Home.png'), 
+    Ticket: require('./assets/Ticket.png'), 
+    User: require('./assets/User.png'), 
+    Pharmacy: require('./assets/Pharmacy.png'),
+    LiveQueue: require('./assets/Chart.png'), // Placeholder name for Live Queue icon
+    Prescription: require('./assets/Clipboard.png'), // Placeholder name for Rx icon
+    BookAppointment: require('./assets/Calendar.png'), // Placeholder name for Booking icon
+};
+
+// Custom Icon Component to render SVGs using Image and tintColor for theming
+const SvgIcon = ({ name, size = 22, color, style }) => {
+    const assetSource = ASSETS[name];
+    
+    if (!assetSource) {
+         // Fallback to text initials if asset is missing (e.g., if LiveQueue.svg isn't added yet)
+         return <Text style={[{fontSize: size, color: color || '#000'}, style]}>{name[0] || '?'}</Text>
+    }
+
+    return (
+        <Image 
+            source={assetSource} 
+            style={[{ width: size, height: size, tintColor: color }, style]} 
+            resizeMode="contain" 
+        />
+    );
+};
+// -----------------------------------------------------------------
+
+
 // --- Notification Setup ---
-// Set the notification handler to allow alerts/sounds in the foreground
 Notifications.setNotificationHandler({
     handleNotification: async () => ({
         shouldShowAlert: true,
@@ -31,36 +64,47 @@ Notifications.setNotificationHandler({
     }),
 });
 
-// Utility function to request permissions and schedule local notification
-async function scheduleLocalNotification(title, body) {
-    // 1. Get permissions
-    let token;
-    if (Device.isDevice) {
-        const { status: existingStatus } = await Notifications.getPermissionsAsync();
-        let finalStatus = existingStatus;
-        if (existingStatus !== 'granted') {
-            const { status } = await Notifications.requestPermissionsAsync();
-            finalStatus = status;
-        }
-        if (finalStatus !== 'granted') {
-            Alert.alert('Permission Denied', 'Failed to get push token for notification. Please enable permissions in settings.');
-            return;
-        }
-        
-        // Android specific channel setup (recommended)
-        if (Platform.OS === 'android') {
-             Notifications.setNotificationChannelAsync('default', {
-                name: 'Default',
-                importance: Notifications.AndroidImportance.MAX,
-                vibrationPattern: [0, 250, 250, 250],
-                lightColor: '#FF231F7C',
-            });
-        }
-    } else {
-        // Skip permission check on web/emulator (non-physical device)
+/**
+ * Requests notification permissions immediately when the app loads.
+ */
+async function registerForPushNotificationsAsync() {
+    if (!Device.isDevice) return;
+
+    const { status: existingStatus } = await Notifications.getPermissionsAsync();
+    let finalStatus = existingStatus;
+
+    if (existingStatus !== 'granted') {
+        const { status } = await Notifications.requestPermissionsAsync();
+        finalStatus = status;
     }
 
-    // 2. Schedule the notification
+    if (finalStatus !== 'granted') {
+        Alert.alert(
+            'Notification Required', 
+            'Please enable notifications in your device settings to receive real-time updates.'
+        );
+        return;
+    }
+    
+    if (Platform.OS === 'android') {
+        Notifications.setNotificationChannelAsync('default', {
+            name: 'Default',
+            importance: Notifications.AndroidImportance.MAX,
+            vibrationPattern: [0, 250, 250, 250],
+            lightColor: '#FF231F7C',
+        });
+    }
+    
+    // Fetch push token (even if not used, confirms setup)
+    await Notifications.getExpoPushTokenAsync({ 
+        projectId: Constants.expoConfig.extra.eas.projectId 
+    });
+}
+
+/**
+ * Schedules a local notification for critical updates.
+ */
+async function scheduleLocalNotification(title, body) {
     await Notifications.scheduleNotificationAsync({
         content: {
             title: title,
@@ -68,21 +112,21 @@ async function scheduleLocalNotification(title, body) {
             sound: 'default',
         },
         trigger: { 
-            seconds: 1, // Show almost immediately
+            seconds: 1, 
             channelId: 'default' 
         },
     });
 }
 // --- END Notification Setup ---
 
-// --- Tab Configuration and Icon Mapping ---
+// --- Tab Configuration and Icon Mapping (Using SVG names) ---
 const TABS = [
-    { key: 'home', title: 'Home', icon: '🏠' },
-    { key: 'livequeue', title: 'Live Queue', icon: '⏱️' }, 
-    { key: 'queue', title: 'Token', icon: '🎫' },
-    { key: 'prescriptions', title: 'Rx', icon: '📝' },
-    { key: 'pharmacy', title: 'Pharmacy', icon: '💊' },
-    { key: 'profile', title: 'Profile', icon: '👤' },
+    { key: 'home', title: 'Home', iconName: 'Home' },
+    { key: 'livequeue', title: 'Live Queue', iconName: 'LiveQueue' }, 
+    { key: 'queue', title: 'Token', iconName: 'Ticket' },
+    { key: 'prescriptions', title: 'Rx', iconName: 'Prescription' },
+    { key: 'pharmacy', title: 'Pharmacy', iconName: 'Pharmacy' },
+    { key: 'profile', title: 'Profile', iconName: 'User' },
 ];
 
 const TABS_NAV_BAR = TABS.filter(tab => 
@@ -154,7 +198,7 @@ const ResendOTPButtonMobile = ({ lastResendTime, onResend, isLoading }) => {
     );
 };
 
-// 💡 NEW COMPONENT: Bottom Tab Bar
+// BOTTOM TAB BAR
 const BottomTabBar = ({ activeTab, onTabPress, pharmacyCount }) => (
     <View style={styles.bottomBarContainer}>
         {TABS_NAV_BAR.map(tab => (
@@ -163,9 +207,12 @@ const BottomTabBar = ({ activeTab, onTabPress, pharmacyCount }) => (
                 style={styles.bottomBarButton}
                 onPress={() => onTabPress(tab.key)}
             >
-                <Text style={[styles.bottomBarIcon, activeTab === tab.key && styles.bottomBarIconActive]}>
-                    {tab.icon}
-                </Text>
+                <SvgIcon 
+                    name={tab.iconName} 
+                    size={22} 
+                    color={activeTab === tab.key ? styles.bottomBarIconActive.color : styles.bottomBarIcon.color}
+                    style={styles.bottomBarIconStyle}
+                />
                 <Text style={[styles.bottomBarText, activeTab === tab.key && styles.bottomBarTextActive]}>
                     {tab.title}
                     {tab.key === 'pharmacy' && pharmacyCount > 0 && 
@@ -209,7 +256,6 @@ const PatientDashboardMobile = () => {
     
     const patientInConsultation = doctorQueue.find(token => token.status === 'in-consultation');
     
-    // queueDisplayList is used specifically on the 'Token' tab to show only patients ahead/in consultation.
     const queueDisplayList = [];
     if (patientInConsultation && !isPatientToken(patientInConsultation)) {
         queueDisplayList.push(patientInConsultation);
@@ -262,7 +308,7 @@ const PatientDashboardMobile = () => {
             const response = await axios.get(`${API_BASE}/api/queue/my-token`);
             const token = response.data.data.token;
             setCurrentToken(token);
-            return token; // Return token for use in handleQueueUpdate
+            return token; 
         } catch (e) {
             setCurrentToken(null);
             setDoctorQueue([]); 
@@ -301,6 +347,11 @@ const PatientDashboardMobile = () => {
     // --- Effects and Socket Setup ---
 
     useEffect(() => {
+        // 1. Request notification permission immediately on component mount (after login)
+        registerForPushNotificationsAsync();
+    }, []);
+
+    useEffect(() => {
         fetchDoctors();
         fetchCurrentToken();
         fetchPrescriptions();
@@ -313,7 +364,6 @@ const PatientDashboardMobile = () => {
             const previousTokenPosition = currentToken ? currentToken.position : null;
             
             fetchCurrentToken().then((newToken) => {
-                // Fetch updated queue stats for the currently selected doctor or the doctor of the new token
                 const doctorIdToFetch = newToken?.doctor?._id || selectedDoctor;
                 if (doctorIdToFetch) {
                     fetchQueueStats(doctorIdToFetch);
@@ -343,7 +393,7 @@ const PatientDashboardMobile = () => {
 
         const handleNewPrescription = (data) => {
             if (data.token.patient._id === user.id) {
-                Alert.alert('Prescription Ready!', 'Your prescription is ready! Check the Prescriptions tab.');
+                scheduleLocalNotification('Prescription Ready!', 'Your prescription is ready! Check the Prescriptions tab.');
                 fetchPrescriptions(); 
                 fetchCurrentToken();
             }
@@ -351,12 +401,10 @@ const PatientDashboardMobile = () => {
         
         const handleFeeReady = (data) => {
             if (data.patientId === user.id) {
-                // --- FEE READY NOTIFICATION (Using Expo Notification instead of just Alert) ---
                 scheduleLocalNotification(
                     'Payment Required!', 
                     `Your pharmacy fees are ready: ${formatINR(data.totalFee)}. Please pay in the Pharmacy tab to receive your medication.`
                 );
-                // --- END FEE READY NOTIFICATION ---
                 fetchPrescriptions(); 
                 setActiveTab('pharmacy'); 
             }
@@ -364,7 +412,7 @@ const PatientDashboardMobile = () => {
         
         const handleDeliveryComplete = (data) => {
             if (data.patientId === user.id) {
-                Alert.alert('Delivery Complete', 'Medication delivery/collection complete! Your order history has been updated.');
+                scheduleLocalNotification('Delivery Complete', 'Medication delivery/collection complete! Your order history has been updated.');
                 fetchPrescriptions(); 
                 setPatientOtp(null); 
             }
@@ -386,12 +434,10 @@ const PatientDashboardMobile = () => {
     }, [user, selectedDoctor, fetchDoctors, fetchCurrentToken, fetchPrescriptions, fetchQueueStats, fetchDoctorQueue, currentToken]); 
     
     useEffect(() => {
-        // Data fetch synchronization for Live Queue and Booking
         if (selectedDoctor) {
             fetchQueueStats(selectedDoctor);
             fetchDoctorQueue(selectedDoctor);
         } else {
-            // Clear stats immediately when no doctor is selected
             setQueueStats({});
             setDoctorQueue([]);
         }
@@ -430,21 +476,25 @@ const PatientDashboardMobile = () => {
             const newToken = response.data.data.token;
             setCurrentToken(newToken);
             
-            // --- BOOKING NOTIFICATION ---
             scheduleLocalNotification(
-                'Success!', 
+                'Token Confirmed!', 
                 `Token #${newToken.tokenNumber} booked for Dr. ${newToken.doctor?.name}. Your position is ${newToken.position}.`
             );
-            // --- END BOOKING NOTIFICATION ---
 
             socket.emit('join-queue', selectedDoctor);
             fetchDoctorQueue(selectedDoctor);
-            setActiveTab('queue'); // Switch to queue tab on success
+            setActiveTab('queue'); 
         } catch (error) {
             if (error.response) {
-                Alert.alert('Booking Failed (Server)', error.response.data.message || `Server Error.`);
+                scheduleLocalNotification(
+                    'Booking Failed', 
+                    error.response.data.message || `Server Error. Could not book token.`
+                );
             } else {
-                Alert.alert('Booking Failed', 'An unexpected error occurred during the booking process.');
+                scheduleLocalNotification(
+                    'Booking Failed', 
+                    'An unexpected error occurred during the booking process.'
+                );
             }
         } finally {
             setLoading(false);
@@ -465,13 +515,13 @@ const PatientDashboardMobile = () => {
                         try {
                             await axios.delete(`${API_BASE}/api/queue/cancel-token/${currentToken._id}`);
 
-                            Alert.alert('Cancelled', `Token #${currentToken.tokenNumber} cancelled successfully.`);
+                            scheduleLocalNotification('Cancelled', `Token #${currentToken.tokenNumber} cancelled successfully.`);
                             setCurrentToken(null);
                             setDoctorQueue([]);
                             fetchQueueStats(selectedDoctor);
                         } catch (error) {
                             console.error('Token cancellation error:', error);
-                            Alert.alert('Error', error.response?.data?.message || 'Error cancelling token.');
+                            scheduleLocalNotification('Error', error.response?.data?.message || 'Error cancelling token.');
                         } finally {
                             setLoading(false);
                         }
@@ -490,11 +540,11 @@ const PatientDashboardMobile = () => {
                 { text: "Delete", onPress: async () => {
                     try {
                         await axios.delete(`${API_BASE}/api/patients/prescriptions/${id}`);
-                        Alert.alert('Success', 'Prescription deleted.');
+                        scheduleLocalNotification('Success', 'Prescription deleted.');
                         fetchPrescriptions();
                         if (selectedPrescription?._id === id) setSelectedPrescription(null);
                     } catch (error) {
-                        Alert.alert('Error', error.response?.data?.message || 'Error deleting prescription.');
+                        scheduleLocalNotification('Error', error.response?.data?.message || 'Error deleting prescription.');
                     }
                 }},
             ]
@@ -514,12 +564,13 @@ const PatientDashboardMobile = () => {
 
         try {
             const generatedOtp = generateOtp();
-            const response = await axios.post(`${API_BASE}/api/patients/pay-fees/${prescription._id}`, {
+            await axios.post(`${API_BASE}/api/patients/pay-fees/${prescription._id}`, {
                 mockOtp: generatedOtp 
             });
 
-            // Using formatINR here
-            Alert.alert('Payment Successful!', `Payment of ${formatINR(prescription.fee.total)} successful! Pharmacy has been notified. Your OTP is ${generatedOtp}.`);
+            scheduleLocalNotification('Payment Successful!', 
+                `Payment of ${formatINR(prescription.fee.total)} confirmed! Your delivery OTP is ${generatedOtp}.`
+            );
             
             socket.emit('patient-paid', { 
                 patientId: user.id, 
@@ -535,7 +586,7 @@ const PatientDashboardMobile = () => {
             
         } catch (error) {
             console.error('Payment error:', error);
-            Alert.alert('Payment Failed', error.response?.data?.message || 'Payment failed. Please try again.');
+            scheduleLocalNotification('Payment Failed', error.response?.data?.message || 'Payment failed. Please try again.');
         } finally {
             setPaymentLoading(false);
         }
@@ -549,16 +600,16 @@ const PatientDashboardMobile = () => {
         try {
             const generatedOtp = generateOtp();
 
-            const response = await axios.post(`${API_BASE}/api/patients/resend-otp/${selectedPrescription._id}`, {
+            await axios.post(`${API_BASE}/api/patients/resend-otp/${selectedPrescription._id}`, {
                 mockOtp: generatedOtp 
             });
 
-            Alert.alert('OTP Resent', `New OTP sent successfully! (Code updated for security)`);
+            scheduleLocalNotification('OTP Resent', `New OTP sent successfully! (Code updated for security)`);
             setPatientOtp(generatedOtp);
             setLastResendTime(Date.now()); 
         } catch (error) {
             console.error('Resend OTP error:', error);
-            Alert.alert('Error', error.response?.data?.message || 'Error resending OTP. Please wait and try again.');
+            scheduleLocalNotification('Error', error.response?.data?.message || 'Error resending OTP. Please wait and try again.');
         } finally {
             setPaymentLoading(false);
         }
@@ -593,7 +644,7 @@ const PatientDashboardMobile = () => {
         </View>
     );
     
-    // 🌟 RENDER FUNCTION: Profile Tab Content
+    // 🌟 RENDER FUNCTION: Profile Tab Content 
     const renderProfileTabContent = () => (
         <View style={styles.card}>
             <Text style={styles.sectionTitle}>My Profile</Text>
@@ -627,7 +678,7 @@ const PatientDashboardMobile = () => {
         </View>
     );
 
-    // --- Render Functions ---
+    // --- Render Functions (MODIFIED to use SvgIcon) ---
 
     const renderHeader = () => (
         <View style={styles.header}>
@@ -635,23 +686,21 @@ const PatientDashboardMobile = () => {
         </View>
     );
     
-    // 💡 UPDATED RENDER: Home Tab Content (Dynamic Book/Show Token)
     const renderHomeTabContent = () => {
         
-        // Determine the text, icon, and action based on whether the user has a current token
         const isTokenActive = !!currentToken;
         const mainActionCard = isTokenActive ? 
             {
                 title: "Show My Token",
                 subtitle: `Token #${currentToken.tokenNumber} is active.`,
-                icon: '🎟️', 
+                iconName: 'Ticket', 
                 color: '#28a745', 
                 action: () => setActiveTab('queue'),
             } : 
             {
                 title: "Book New Appointment",
                 subtitle: "Select a doctor and get your token number now.",
-                icon: '✍️', 
+                iconName: 'BookAppointment', 
                 color: '#00bcd4', 
                 action: () => setActiveTab('queue'),
             };
@@ -672,9 +721,12 @@ const PatientDashboardMobile = () => {
                         }]} 
                         onPress={mainActionCard.action} 
                     >
-                        <Text style={[styles.actionCardIcon, { color: mainActionCard.color }]}>
-                            {mainActionCard.icon}
-                        </Text>
+                        <SvgIcon 
+                            name={mainActionCard.iconName} 
+                            size={30} 
+                            color={mainActionCard.color}
+                            style={styles.actionCardIconStyle}
+                        />
                         <Text style={styles.actionCardTitle}>{mainActionCard.title}</Text>
                         <Text style={[styles.actionCardSubtitle, {color: mainActionCard.color}]}>{mainActionCard.subtitle}</Text>
                     </TouchableOpacity>
@@ -684,7 +736,12 @@ const PatientDashboardMobile = () => {
                         style={[styles.actionCard, { backgroundColor: '#fffbe0', width: '48%' }]} 
                         onPress={() => setActiveTab('prescriptions')}
                     >
-                        <Text style={[styles.actionCardIcon, { color: '#ffc107' }]}>📜</Text>
+                        <SvgIcon 
+                            name={'Prescription'} 
+                            size={30} 
+                            color={'#ffc107'}
+                            style={styles.actionCardIconStyle}
+                        />
                         <Text style={styles.actionCardTitle}>View Prescriptions</Text>
                         <Text style={[styles.actionCardSubtitle, {color: '#6c757d'}]}>History & Diagnosis</Text>
                     </TouchableOpacity>
@@ -694,7 +751,12 @@ const PatientDashboardMobile = () => {
                         style={[styles.actionCard, { backgroundColor: '#f0f0f0', width: '100%', marginTop: 5 }]} 
                         onPress={() => setActiveTab('livequeue')} 
                     >
-                        <Text style={[styles.actionCardIcon, { color: '#343a40' }]}>📈</Text>
+                        <SvgIcon 
+                            name={'LiveQueue'} 
+                            size={30} 
+                            color={'#343a40'}
+                            style={styles.actionCardIconStyle}
+                        />
                         <Text style={styles.actionCardTitle}>Check Live Queue Status</Text>
                         <Text style={[styles.actionCardSubtitle, {color: '#6c757d'}]}>See waiting times for all doctors</Text>
                     </TouchableOpacity>
@@ -717,9 +779,7 @@ const PatientDashboardMobile = () => {
         );
     };
 
-    // 💡 NEW RENDER: Live Queue Tab Content (Shows the full doctorQueue for selected doctor)
     const renderLiveQueueTabContent = () => {
-        // Find the selected doctor object to display their name
         const selectedDoctorObj = selectedDoctor ? doctors.find(d => d._id === selectedDoctor) : null;
         const selectedDoctorName = selectedDoctorObj ? `Dr. ${selectedDoctorObj.name}` : 'Tap to choose doctor...';
         
@@ -737,7 +797,6 @@ const PatientDashboardMobile = () => {
                     <View style={styles.card}>
                         <Text style={[styles.doctorNameText, {marginBottom: 10}]}>{selectedDoctorName}</Text>
 
-                        {/* FIX: Check if we have fetched data for the selected doctor */}
                         {queueStats.totalWaiting !== undefined ? (
                             <View>
                                 <View style={styles.statsBox}>
@@ -751,7 +810,6 @@ const PatientDashboardMobile = () => {
                                 
                                 <Text style={styles.queueStatusTitle}>Queue Order (Full List):</Text>
                                 {doctorQueue.length > 0 ? (
-                                    // Using the unfiltered doctorQueue here to show everyone
                                     doctorQueue.map((token) => {
                                         const statusColor = token.status === 'in-consultation' ? '#dc3545' : '#17a2b8';
                                         
@@ -774,7 +832,6 @@ const PatientDashboardMobile = () => {
                                 )}
                             </View>
                         ) : (
-                            // Show loading indicator only when a doctor is selected, otherwise show prompt
                             selectedDoctor ? (
                                 <View style={{alignItems: 'center'}}>
                                     <ActivityIndicator size="large" color="#00bcd4" style={{marginBottom: 10}}/>
@@ -796,7 +853,6 @@ const PatientDashboardMobile = () => {
 
     const renderQueueTabContent = () => { 
         if (currentToken) {
-            // --- State 1: Active Token View with Your Position ---
             const statusStyle = currentToken.status === 'waiting' ? styles.statusWarning : styles.statusSuccess;
             const statusText = currentToken.status.toUpperCase();
             
@@ -830,7 +886,6 @@ const PatientDashboardMobile = () => {
                         </TouchableOpacity>
                     )}
                     
-                    {/* Active Queue List (Only showing relevant patients for better focus) */}
                     <Text style={styles.queueStatusTitle}>Patients Ahead</Text>
                     {queueDisplayList.length > 0 ? (
                         queueDisplayList.map((token) => {
@@ -908,11 +963,11 @@ const PatientDashboardMobile = () => {
         const deletePrescriptionAction = async (id) => {
             try {
                 await axios.delete(`${API_BASE}/api/patients/prescriptions/${id}`);
-                Alert.alert('Success', 'Prescription deleted.');
+                scheduleLocalNotification('Success', 'Prescription deleted.');
                 fetchPrescriptions();
                 if (selectedPrescription?._id === id) setSelectedPrescription(null);
             } catch (error) {
-                Alert.alert('Error', error.response?.data?.message || 'Error deleting prescription.');
+                scheduleLocalNotification('Error', error.response?.data?.message || 'Error deleting prescription.');
             }
         };
 
@@ -1117,7 +1172,6 @@ const PatientDashboardMobile = () => {
                                 key={doctor._id}
                                 style={styles.doctorOption}
                                 onPress={() => {
-                                    // FIX: Update selected doctor AND immediately trigger data fetch
                                     setSelectedDoctor(doctor._id);
                                     setShowDoctorPicker(false);
                                 }}
@@ -1173,7 +1227,6 @@ const PatientDashboardMobile = () => {
                 <View style={{ height: 10 }} />
             </ScrollView>
             
-            {/* 💡 NEW BOTTOM NAVIGATION BAR */}
             <BottomTabBar 
                 activeTab={activeTab} 
                 onTabPress={setActiveTab} 
@@ -1185,7 +1238,7 @@ const PatientDashboardMobile = () => {
     );
 };
 
-// --- Styles (Refactored React Native StyleSheet) ---
+// --- Styles (Finalized) ---
 
 const styles = StyleSheet.create({
     safeArea: { 
@@ -1226,7 +1279,7 @@ const styles = StyleSheet.create({
         color: '#17a2b8', 
         marginBottom: 15,
     },
-    // --- New Home/Action Card Styles ---
+    // --- Home/Action Card Styles ---
     welcomeCard: {
         backgroundColor: '#00bcd4',
         padding: 25,
@@ -1265,8 +1318,7 @@ const styles = StyleSheet.create({
         borderColor: '#eee',
         elevation: 1,
     },
-    actionCardIcon: {
-        fontSize: 30,
+    actionCardIconStyle: { // For the SvgIcon component
         marginBottom: 5,
     },
     actionCardTitle: {
@@ -1298,7 +1350,7 @@ const styles = StyleSheet.create({
     },
     // --- END Home/Action Card Styles ---
     
-    // --- New Bottom Tab Bar Styles ---
+    // --- Bottom Tab Bar Styles ---
     bottomBarContainer: {
         flexDirection: 'row',
         backgroundColor: '#fff',
@@ -1314,13 +1366,14 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
         paddingVertical: 5,
     },
-    bottomBarIcon: {
-        fontSize: 22,
+    bottomBarIcon: { 
         color: '#adb5bd',
-        marginBottom: 2,
     },
-    bottomBarIconActive: {
-        color: '#00bcd4', // Active color
+    bottomBarIconActive: { 
+        color: '#00bcd4', 
+    },
+    bottomBarIconStyle: {
+        marginBottom: 2,
     },
     bottomBarText: {
         fontSize: 10,
@@ -1567,10 +1620,9 @@ const styles = StyleSheet.create({
     bookButton: {
         backgroundColor: '#00bcd4',
         padding: 15,
-        borderRadius: 10, // Slightly more rounded
+        borderRadius: 10, 
         alignItems: 'center',
-        marginTop: 20, // Increased margin for visual separation
-        // Enhanced shadow for 3D effect
+        marginTop: 20, 
         ...Platform.select({
             ios: {
                 shadowColor: '#00bcd4',
@@ -1585,7 +1637,7 @@ const styles = StyleSheet.create({
     },
     bookButtonText: {
         color: '#fff',
-        fontWeight: '900', // Made text extra bold
+        fontWeight: '900', 
         fontSize: 18,
     },
     // --- QUEUE LIST STYLES (Used in both Live Queue and Token views) ---

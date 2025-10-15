@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "MediQueueMobileApp",
-    "slug": "MediQueueMobileApp",
-    "version": "1.0.0",
+    "name": "MediQueue",
+    "slug": "MediQueue",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -23,10 +23,16 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "com.abhijith7907.MediQueueMobileApp"
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "4e663538-bc8c-4a57-ab3e-680ff4959820"
+      }
     }
   }
 }
