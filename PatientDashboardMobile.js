@@ -675,6 +675,11 @@ const PatientDashboardMobile = () => {
                     </TouchableOpacity>
                 </View>
             </View>
+            <View style={styles.licenseNoteContainer}>
+            <Text style={styles.licenseNoteText}>
+                Note: License owned by Abhi Solutions
+            </Text>
+        </View>
         </View>
     );
 
@@ -1529,6 +1534,18 @@ const styles = StyleSheet.create({
         color: '#343a40',
         flex: 2,
         textAlign: 'right',
+    },
+     licenseNoteContainer: {
+        marginTop: 20,
+        paddingTop: 10,
+        borderTopWidth: 1,
+        borderTopColor: '#eee',
+        alignItems: 'center',
+    },
+    licenseNoteText: {
+        fontSize: 12,
+        color: '#6c757d',
+        fontStyle: 'italic',
     },
 
     // 💡 STYLES FOR PHARMACY TAB
